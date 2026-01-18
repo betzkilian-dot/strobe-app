@@ -10,7 +10,7 @@ import plotly.express as px
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # Versionsnummer
-VERSION = "v0.009"
+VERSION = "v0.010"
 
 st.set_page_config(page_title="Physik Strobe Pro", layout="wide")
 
@@ -97,41 +97,40 @@ if st.session_state.base_strobe is not None:
     canvas_width = st.sidebar.slider("Anzeigebreite (Pixel)", 400, 1200, 800)
     real_dist = st.sidebar.number_input("Referenzstrecke (m)", value=1.0)
 
-    # --- BENUTZERFÜHRUNG & LOGIK ---
-    st.subheader("💡 Aktueller Status")
-    
-    # Logik für die Anzeige des richtigen Frames
+    # --- STATUS ANZEIGE ---
+    st.subheader("💡 Aktueller Schritt")
     if len(st.session_state.clicks_ref) < 2:
-        st.info(f"📏 **Referenz markieren**: Setze Punkt {len(st.session_state.clicks_ref)+1}/2 für den Maßstab.")
         idx_to_show = 0
+        st.info(f"📏 **Referenzstrecke festlegen**: Klicke Punkt {len(st.session_state.clicks_ref)+1} von 2 an.")
     elif not st.session_state.ref_confirmed:
-        st.warning("⚠️ **Referenz prüfen**: Passt die gelbe Linie? Bestätige unten, um fortzufahren.")
         idx_to_show = 0
-    elif st.session_state.edit_mode:
-        st.warning(f"🛠️ **Korrektur-Modus**: Setze Punkt {st.session_state.edit_idx + 1} neu.")
-        idx_to_show = st.session_state.edit_idx
+        st.warning("⚠️ **Referenz prüfen**: Sind die gelben Punkte korrekt? Bestätige unten.")
     else:
-        curr_pts = len(st.session_state.clicks_track)
-        if curr_pts < len(st.session_state.extracted_frames):
-            st.success(f"🎯 **Tracking**: Bildpunkt {curr_pts + 1} von {len(st.session_state.extracted_frames)}")
-            idx_to_show = st.session_state.current_frame_idx
+        # Tracking Modus
+        if st.session_state.edit_mode:
+            idx_to_show = st.session_state.edit_idx
+            st.warning(f"🛠️ **Korrektur**: Klicke Punkt {idx_to_show + 1} neu an.")
         else:
-            st.success("✅ **Fertig**: Alle Punkte erfasst.")
-            idx_to_show = len(st.session_state.extracted_frames) - 1
+            idx_to_show = st.session_state.current_frame_idx
+            curr_pts = len(st.session_state.clicks_track)
+            if curr_pts < len(st.session_state.extracted_frames):
+                st.success(f"🎯 **Tracking**: Markiere das Objekt in Bild {curr_pts + 1} von {len(st.session_state.extracted_frames)}")
+            else:
+                st.success("✅ **Analyse bereit**: Alle Punkte erfasst.")
 
-    # --- TRACKING INTERFACE ---
+    # --- BILD VORBEREITUNG ---
     raw_frame = st.session_state.extracted_frames[idx_to_show].copy()
     pil_img = enhance_image(Image.fromarray(raw_frame), brightness, contrast)
     draw = ImageDraw.Draw(pil_img)
     
     # Referenz zeichnen (Gelb & Dick)
-    if len(st.session_state.clicks_ref) >= 1:
-        for p in st.session_state.clicks_ref:
-            draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="yellow", outline="black")
-        if len(st.session_state.clicks_ref) == 2:
-            draw.line(st.session_state.clicks_ref, fill="yellow", width=8) # Dicke gelbe Linie
+    for i, p in enumerate(st.session_state.clicks_ref):
+        draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="yellow", outline="black")
+        draw.text((p[0]+10, p[1]-10), f"R{i+1}", fill="yellow")
+    if len(st.session_state.clicks_ref) == 2:
+        draw.line(st.session_state.clicks_ref, fill="yellow", width=8)
 
-    # Tracking Punkte mit Nummern zeichnen
+    # Tracking Punkte zeichnen
     for i, p in enumerate(st.session_state.clicks_track):
         color = "cyan" if (st.session_state.edit_mode and i == st.session_state.edit_idx) else "red"
         draw.ellipse([p[0]-4, p[1]-4, p[0]+4, p[1]+4], fill=color)
@@ -144,11 +143,11 @@ if st.session_state.base_strobe is not None:
         scale = w_orig / canvas_width
         rx, ry = value["x"] * scale, value["y"] * scale
         
-        # 1. Referenz-Punkte setzen
+        # Referenz Logik
         if len(st.session_state.clicks_ref) < 2:
             st.session_state.clicks_ref.append((rx, ry))
             st.rerun()
-        # 2. Im Tracking-Modus (nur wenn Referenz bestätigt)
+        # Tracking Logik (nur wenn Referenz bestätigt)
         elif st.session_state.ref_confirmed:
             if st.session_state.edit_mode:
                 st.session_state.clicks_track[st.session_state.edit_idx] = (rx, ry)
@@ -161,50 +160,38 @@ if st.session_state.base_strobe is not None:
                         st.session_state.current_frame_idx += 1
                     st.rerun()
 
-    # --- SPEZIELLE BESTÄTIGUNGS-BUTTONS ---
+    # --- SPEZIELLE BUTTONS FÜR REFERENZ ---
     if len(st.session_state.clicks_ref) == 2 and not st.session_state.ref_confirmed:
-        if st.button("✅ Referenzstrecke passt so - Tracking starten", type="primary", use_container_width=True):
-            st.session_state.ref_confirmed = True
-            st.rerun()
-        if st.button("❌ Punkte falsch - Referenz neu setzen", use_container_width=True):
-            st.session_state.clicks_ref = []
-            st.rerun()
+        c_a, c_b = st.columns(2)
+        with c_a:
+            if st.button("✅ Referenzstrecke bestätigen", type="primary", use_container_width=True):
+                st.session_state.ref_confirmed = True
+                st.rerun()
+        with c_b:
+            if st.button("🔄 Referenz neu zeichnen", use_container_width=True):
+                st.session_state.clicks_ref = []
+                st.rerun()
 
-    # --- NORMALE CONTROLS ---
+    # --- STEUERUNG ---
     st.divider()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("⏪ Letzter Punkt weg / Frame zurück", use_container_width=True):
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    with ctrl1:
+        if st.button("⏪ Zurück / Punkt löschen", use_container_width=True):
             st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
             if st.session_state.clicks_track: st.session_state.clicks_track.pop()
             st.rerun()
-    with c2:
+    with ctrl2:
         if len(st.session_state.clicks_track) > 0:
-            edit_q = st.number_input("Punkt korrigieren (#)", 1, len(st.session_state.clicks_track), step=1)
-            if st.button("🎯 Korrektur starten"):
+            edit_idx = st.number_input("Punkt korrigieren (#)", 1, len(st.session_state.clicks_track), step=1)
+            if st.button("🎯 Punkt korrigieren"):
                 st.session_state.edit_mode = True
-                st.session_state.edit_idx = edit_q - 1
+                st.session_state.edit_idx = edit_idx - 1
                 st.rerun()
-    with c3:
+    with ctrl3:
         if st.button("📏 Referenz komplett neu", use_container_width=True):
             st.session_state.clicks_ref = []
             st.session_state.ref_confirmed = False
             st.rerun()
-
-    # --- STROBE ANZEIGE ---
-    with st.expander("🖼️ Stroboskop-Übersicht"):
-        st_clean = enhance_image(Image.fromarray(st.session_state.base_strobe), brightness, contrast)
-        st_eval = st_clean.copy()
-        draw_st = ImageDraw.Draw(st_eval)
-        if len(st.session_state.clicks_ref) == 2:
-            draw_st.line(st.session_state.clicks_ref, fill="yellow", width=8)
-        for i, p in enumerate(st.session_state.clicks_track):
-            draw_st.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
-            draw_st.text((p[0]+8, p[1]+8), str(i+1), fill="red")
-        st.image(st_eval, use_container_width=True)
-        buf = io.BytesIO()
-        st_eval.save(buf, format="PNG")
-        st.sidebar.download_button("📥 Strobe-Bild speichern", buf.getvalue(), "strobe_analyse.png", "image/png", use_container_width=True)
 
     # --- DIAGRAMME ---
     if len(st.session_state.clicks_track) >= 2 and st.session_state.ref_confirmed:
@@ -223,11 +210,16 @@ if st.session_state.base_strobe is not None:
             dist_cum.append(dist_cum[-1] + d_m)
             v_list.append(d_m / dt)
         
-        t1, t2 = st.tabs(["t-s Diagramm", "t-v Diagramm"])
-        with t1:
+        tab_s, tab_v = st.tabs(["t-s Diagramm", "t-v Diagramm"])
+        with tab_s:
             st.plotly_chart(px.line(x=times, y=dist_cum, labels={'x':'t (s)', 'y':'s (m)'}, markers=True), use_container_width=True)
-        with t2:
+        with tab_v:
             st.plotly_chart(px.line(x=times[1:], y=v_list, labels={'x':'t (s)', 'y':'v (m/s)'}, markers=True), use_container_width=True)
 
+        # Downloads in Sidebar
+        df_csv = pd.DataFrame({"Zeit_s": times, "Weg_m": dist_cum})
+        st.sidebar.header("3. Export")
+        st.sidebar.download_button("📥 Messdaten (CSV)", df_csv.to_csv(index=False).encode('utf-8'), "messdaten.csv", "text/csv", use_container_width=True)
+
 st.divider()
-st.caption(f"ByLKI Physik-Analyse | {VERSION} | Kilian Betz")
+st.caption(f"ByLKI Physik-Analyse | Version: {VERSION} | Kilian Betz")
