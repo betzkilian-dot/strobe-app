@@ -1,7 +1,7 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 import tempfile
 import os
 import pandas as pd
@@ -42,7 +42,6 @@ def process_video_and_strobe(video_path, num_images, alpha):
 
     if not frames: return None, None, 0
     
-    # Stroboskop-Berechnung
     acc = frames[0].astype(np.float32)
     for i in range(1, len(frames)):
         acc = cv2.addWeighted(acc, 1.0 - alpha, frames[i].astype(np.float32), alpha, 0)
@@ -50,12 +49,18 @@ def process_video_and_strobe(video_path, num_images, alpha):
     strobe_img = np.clip(acc, 0, 255).astype(np.uint8)
     return frames, strobe_img, actual_freq
 
+def enhance_image(pil_img, brightness, contrast):
+    enhancer = ImageEnhance.Brightness(pil_img)
+    pil_img = enhancer.enhance(brightness)
+    enhancer = ImageEnhance.Contrast(pil_img)
+    return enhancer.enhance(contrast)
+
 # --- UI Header ---
-st.title("📸 Physik Stroboskop-Analyse Pro")
+st.title("📸 Physik Stroboskop-Analyse")
 
 # --- Sidebar ---
 st.sidebar.header("1. Video & Stroboskop")
-uploaded_file = st.sidebar.file_uploader("Video hochladen", type=["mp4", "mov"])
+uploaded_file = st.sidebar.file_uploader("Video laden", type=["mp4", "mov"])
 
 if uploaded_file:
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tfile:
@@ -73,7 +78,7 @@ if uploaded_file:
     
     alpha_val = st.sidebar.slider("Transparenz (Strobe)", 0.05, 1.0, 0.3)
 
-    if st.sidebar.button("Video verarbeiten & Strobe erstellen", use_container_width=True):
+    if st.sidebar.button("Video verarbeiten", use_container_width=True):
         frames, strobe, freq = process_video_and_strobe(temp_path, num_imgs, alpha_val)
         st.session_state.extracted_frames = frames
         st.session_state.strobe_preview = strobe
@@ -86,16 +91,12 @@ if uploaded_file:
 # --- Hauptbereich ---
 if st.session_state.strobe_preview is not None:
     
-    # DOWNLOADS IN SIDEBAR (Immer verfügbar wenn Strobe da ist)
+    # DOWNLOADS SIDEBAR
     st.sidebar.header("2. Downloads")
-    
-    # Strobe Bild Download
-    strobe_pil = Image.fromarray(st.session_state.strobe_preview)
     buf = io.BytesIO()
-    strobe_pil.save(buf, format="PNG")
-    st.sidebar.download_button("📥 Download Stroboskop Bild", buf.getvalue(), "stroboskop.png", "image/png", use_container_width=True)
+    Image.fromarray(st.session_state.strobe_preview).save(buf, format="PNG")
+    st.sidebar.download_button("📥 Strobe Bild", buf.getvalue(), "strobe.png", "image/png", use_container_width=True)
 
-    # CSV Download Logik
     if len(st.session_state.clicks_track) >= 2 and len(st.session_state.clicks_ref) == 2:
         ref = st.session_state.clicks_ref
         track = st.session_state.clicks_track
@@ -104,69 +105,71 @@ if st.session_state.strobe_preview is not None:
         m_px = real_d / px_d
         f = st.session_state.video_info["freq"]
         csv_list = [{"Intervall": i+1, "v_ms": (np.sqrt((track[i][0]-track[i+1][0])**2 + (track[i][1]-track[i+1][1])**2) * m_px * f)} for i in range(len(track)-1)]
-        st.sidebar.download_button("📥 Download Geschwindigkeiten (CSV)", pd.DataFrame(csv_list).to_csv(index=False).encode('utf-8'), "messdaten.csv", "text/csv", use_container_width=True)
+        st.sidebar.download_button("📥 Geschwindigkeiten (CSV)", pd.DataFrame(csv_list).to_csv(index=False).encode('utf-8'), "daten.csv", "text/csv", use_container_width=True)
 
-    # --- ANZEIGE STROBOSKOPBILD (Immer oben) ---
-    with st.expander("🖼️ Stroboskop-Referenzbild (Dauerhaft verfügbar)", expanded=True):
-        st.image(st.session_state.strobe_preview, use_column_width=True)
+    # Sichtbarkeit & Größe (SIDEBAR)
+    st.sidebar.header("3. Bild-Optimierung")
+    brightness = st.sidebar.slider("Helligkeit", 0.5, 3.0, 1.0)
+    contrast = st.sidebar.slider("Kontrast", 0.5, 3.0, 1.0)
+    canvas_width = st.sidebar.slider("Anzeigebreite (Pixel)", 400, 1200, 800)
+    zoom = st.sidebar.slider("🔍 Zoom im Bild", 1.0, 5.0, 1.0)
+    real_dist = st.sidebar.number_input("Referenzstrecke (m)", value=1.0)
+    st.session_state.last_real_dist = real_dist
+
+    # STROBE REFERENZ
+    with st.expander("🖼️ Stroboskop-Referenzbild"):
+        st.image(st.session_state.strobe_preview, use_container_width=True)
 
     st.divider()
 
-    # --- INTERAKTIVE ANALYSE ---
-    st.subheader("🎯 Interaktive Punkt-Analyse")
-    
-    st.sidebar.header("3. Analyse-Tools")
-    zoom = st.sidebar.slider("🔍 Zoom zum Klicken", 1.0, 5.0, 1.5)
-    real_dist = st.sidebar.number_input("Referenzstrecke (m)", value=1.0)
-    st.session_state.last_real_dist = real_dist
-    
-    if st.sidebar.button("Referenz neu setzen"):
-        st.session_state.clicks_ref = []
-        st.rerun()
-    
-    if st.sidebar.button("Tracking zurücksetzen"):
-        st.session_state.clicks_track = []
-        st.session_state.current_frame_idx = 0
-        st.rerun()
-
-    # Status & Bild-Logik
+    # INTERAKTIVE ANALYSE
     if len(st.session_state.clicks_ref) < 2:
         st.info(f"📏 Schritt 1: Referenz markieren ({len(st.session_state.clicks_ref)+1}/2)")
-        idx_to_show = 0
+        idx = 0
     else:
-        st.success(f"🎯 Schritt 2: Tracking (Bild {st.session_state.current_frame_idx + 1}/{len(st.session_state.extracted_frames)})")
-        idx_to_show = st.session_state.current_frame_idx
+        st.success(f"🎯 Tracking: Bild {st.session_state.current_frame_idx + 1}/{len(st.session_state.extracted_frames)}")
+        idx = st.session_state.current_frame_idx
 
-    # Bild mit Einzeichnungen vorbereiten
-    curr_frame = st.session_state.extracted_frames[idx_to_show].copy()
-    pil_img = Image.fromarray(curr_frame)
+    # Bildvorbereitung
+    raw_frame = st.session_state.extracted_frames[idx].copy()
+    pil_img = Image.fromarray(raw_frame)
+    
+    # Helligkeit/Kontrast anwenden
+    pil_img = enhance_image(pil_img, brightness, contrast)
+    
     draw = ImageDraw.Draw(pil_img)
-
-    # Gelbe Referenzlinie dauerhaft zeichnen
     if len(st.session_state.clicks_ref) == 2:
         draw.line(st.session_state.clicks_ref, fill="yellow", width=5)
-    
-    # Rote Tracking-Punkte zeichnen
     for p in st.session_state.clicks_track:
         draw.ellipse([p[0]-4, p[1]-4, p[0]+4, p[1]+4], fill="red")
 
-    # Zoom-Ansicht für das Klicken
-    w, h = pil_img.size
-    display_img = pil_img.resize((int(w * zoom), int(h * zoom)))
+    # Zoom & Anzeige-Größe
+    w_orig, h_orig = pil_img.size
+    # Wir skalieren das Bild für die Anzeige auf die 'canvas_width'
+    # Die Klick-Koordinate muss aber auf die Original-Pixel zurückgerechnet werden.
     
-    st.write("Tippe auf das Bild, um Punkte zu setzen. Das Bild springt automatisch weiter.")
-    value = streamlit_image_coordinates(display_img, key="main_canvas")
+    st.write("Tippe auf das Objekt. Das Bild springt automatisch weiter.")
+    
+    # Hier wird das Bild für das Interface bereitgestellt
+    # Die Komponente passt das Bild automatisch in die angegebene Breite ein
+    value = streamlit_image_coordinates(
+        pil_img, 
+        width=canvas_width, 
+        key="main_canvas"
+    )
 
     if value:
-        rx, ry = value["x"] / zoom, value["y"] / zoom
+        # Rückrechnung: value['x'] ist relativ zur Breite 'canvas_width'
+        # Wir brauchen es relativ zu w_orig
+        scale_factor = w_orig / canvas_width
+        rx = value["x"] * scale_factor
+        ry = value["y"] * scale_factor
         new_pt = (rx, ry)
         
-        # Referenz setzen
         if len(st.session_state.clicks_ref) < 2:
             if not st.session_state.clicks_ref or (abs(st.session_state.clicks_ref[-1][0] - rx) > 1):
                 st.session_state.clicks_ref.append(new_pt)
                 st.rerun()
-        # Tracking setzen & Auto-Jump
         else:
             if not st.session_state.clicks_track or (abs(st.session_state.clicks_track[-1][0] - rx) > 0.5):
                 st.session_state.clicks_track.append(new_pt)
@@ -174,10 +177,10 @@ if st.session_state.strobe_preview is not None:
                     st.session_state.current_frame_idx += 1
                 st.rerun()
 
-    # Manuelle Steuerung
+    # Controls
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("⬅️ Vorheriges Bild"):
+        if st.button("⬅️ Bild zurück"):
             st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
             st.rerun()
     with c2:
@@ -185,17 +188,16 @@ if st.session_state.strobe_preview is not None:
             st.session_state.current_frame_idx = min(len(st.session_state.extracted_frames)-1, st.session_state.current_frame_idx + 1)
             st.rerun()
     with c3:
-        if st.button("🗑️ Letzten Tracking-Punkt löschen"):
+        if st.button("🗑️ Punkt löschen"):
             if st.session_state.clicks_track:
                 st.session_state.clicks_track.pop()
                 st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
                 st.rerun()
 
-    # Tabelle anzeigen
+    # Tabelle
     if len(st.session_state.clicks_track) >= 2:
         st.divider()
-        st.subheader("Ergebnisse")
-        # Berechnung (identisch zu oben für die Anzeige)
+        st.subheader("Messwerte")
         px_dist = np.sqrt((st.session_state.clicks_ref[0][0]-st.session_state.clicks_ref[1][0])**2 + (st.session_state.clicks_ref[0][1]-st.session_state.clicks_ref[1][1])**2)
         m_per_px = real_dist / px_dist
         f = st.session_state.video_info["freq"]
@@ -204,8 +206,8 @@ if st.session_state.strobe_preview is not None:
             p_a, p_b = st.session_state.clicks_track[i], st.session_state.clicks_track[i+1]
             d_m = np.sqrt((p_a[0]-p_b[0])**2 + (p_a[1]-p_b[1])**2) * m_per_px
             v = d_m * f
-            res.append({"Intervall": i+1, "v (m/s)": round(v, 2), "v (km/h)": round(v*3.6, 2)})
+            res.append({"Intervall": i+1, "v (m/s)": round(v, 2)})
         st.table(pd.DataFrame(res))
 
 else:
-    st.info("Willkommen! Lade ein Video hoch und klicke in der Sidebar auf 'Video verarbeiten'.")
+    st.info("Video laden und 'Video verarbeiten' klicken.")
