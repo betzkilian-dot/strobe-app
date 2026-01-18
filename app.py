@@ -41,11 +41,14 @@ def process_video_and_strobe(video_path, num_images, alpha):
     cap.release()
 
     if not frames: return None, None, 0
+    
+    # Stroboskop-Berechnung
     acc = frames[0].astype(np.float32)
     for i in range(1, len(frames)):
         acc = cv2.addWeighted(acc, 1.0 - alpha, frames[i].astype(np.float32), alpha, 0)
     
-    return frames, np.clip(acc, 0, 255).astype(np.uint8), actual_freq
+    strobe_img = np.clip(acc, 0, 255).astype(np.uint8)
+    return frames, strobe_img, actual_freq
 
 # --- UI Header ---
 st.title("📸 Physik Stroboskop-Analyse Pro")
@@ -80,52 +83,40 @@ if uploaded_file:
         st.session_state.current_frame_idx = 0
     os.unlink(temp_path)
 
-# --- Download Sektion in Sidebar ---
+# --- Hauptbereich ---
 if st.session_state.strobe_preview is not None:
+    
+    # DOWNLOADS IN SIDEBAR (Immer verfügbar wenn Strobe da ist)
     st.sidebar.header("2. Downloads")
     
-    # Stroboskop Bild Download
+    # Strobe Bild Download
     strobe_pil = Image.fromarray(st.session_state.strobe_preview)
     buf = io.BytesIO()
     strobe_pil.save(buf, format="PNG")
-    st.sidebar.download_button(
-        label="📥 Download Stroboskop Bild",
-        data=buf.getvalue(),
-        file_name="stroboskop_aufnahme.png",
-        mime="image/png",
-        use_container_width=True
-    )
+    st.sidebar.download_button("📥 Download Stroboskop Bild", buf.getvalue(), "stroboskop.png", "image/png", use_container_width=True)
 
-    # CSV Download (nur wenn Daten vorhanden)
+    # CSV Download Logik
     if len(st.session_state.clicks_track) >= 2 and len(st.session_state.clicks_ref) == 2:
         ref = st.session_state.clicks_ref
         track = st.session_state.clicks_track
-        real_dist_val = st.session_state.get("last_real_dist", 1.0)
-        
-        px_dist = np.sqrt((ref[0][0]-ref[1][0])**2 + (ref[0][1]-ref[1][1])**2)
-        m_per_px = real_dist_val / px_dist
+        real_d = st.session_state.get("last_real_dist", 1.0)
+        px_d = np.sqrt((ref[0][0]-ref[1][0])**2 + (ref[0][1]-ref[1][1])**2)
+        m_px = real_d / px_d
         f = st.session_state.video_info["freq"]
-        
-        csv_data = []
-        for i in range(len(track)-1):
-            d_px = np.sqrt((track[i][0]-track[i+1][0])**2 + (track[i][1]-track[i+1][1])**2)
-            d_m = d_px * m_per_px
-            v = d_m * f
-            csv_data.append({"Intervall": i+1, "Weg_m": d_m, "v_ms": v, "v_kmh": v*3.6})
-        
-        df = pd.DataFrame(csv_data)
-        st.sidebar.download_button(
-            label="📥 Download Geschwindigkeiten (CSV)",
-            data=df.to_csv(index=False).encode('utf-8'),
-            file_name="messdaten.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        csv_list = [{"Intervall": i+1, "v_ms": (np.sqrt((track[i][0]-track[i+1][0])**2 + (track[i][1]-track[i+1][1])**2) * m_px * f)} for i in range(len(track)-1)]
+        st.sidebar.download_button("📥 Download Geschwindigkeiten (CSV)", pd.DataFrame(csv_list).to_csv(index=False).encode('utf-8'), "messdaten.csv", "text/csv", use_container_width=True)
 
-# --- Hauptbereich ---
-if st.session_state.strobe_preview is not None:
+    # --- ANZEIGE STROBOSKOPBILD (Immer oben) ---
+    with st.expander("🖼️ Stroboskop-Referenzbild (Dauerhaft verfügbar)", expanded=True):
+        st.image(st.session_state.strobe_preview, use_column_width=True)
+
+    st.divider()
+
+    # --- INTERAKTIVE ANALYSE ---
+    st.subheader("🎯 Interaktive Punkt-Analyse")
+    
     st.sidebar.header("3. Analyse-Tools")
-    zoom = st.sidebar.slider("🔍 Zoom (für Klicks)", 1.0, 5.0, 1.5)
+    zoom = st.sidebar.slider("🔍 Zoom zum Klicken", 1.0, 5.0, 1.5)
     real_dist = st.sidebar.number_input("Referenzstrecke (m)", value=1.0)
     st.session_state.last_real_dist = real_dist
     
@@ -140,38 +131,42 @@ if st.session_state.strobe_preview is not None:
 
     # Status & Bild-Logik
     if len(st.session_state.clicks_ref) < 2:
-        st.warning(f"📏 Schritt 1: Referenz markieren ({len(st.session_state.clicks_ref)+1}/2)")
-        frame_to_show = 0
+        st.info(f"📏 Schritt 1: Referenz markieren ({len(st.session_state.clicks_ref)+1}/2)")
+        idx_to_show = 0
     else:
         st.success(f"🎯 Schritt 2: Tracking (Bild {st.session_state.current_frame_idx + 1}/{len(st.session_state.extracted_frames)})")
-        frame_to_show = st.session_state.current_frame_idx
+        idx_to_show = st.session_state.current_frame_idx
 
-    # Bild zeichnen
-    pil_img = Image.fromarray(st.session_state.extracted_frames[frame_idx_to_show := frame_to_show]).copy()
+    # Bild mit Einzeichnungen vorbereiten
+    curr_frame = st.session_state.extracted_frames[idx_to_show].copy()
+    pil_img = Image.fromarray(curr_frame)
     draw = ImageDraw.Draw(pil_img)
 
-    # Referenzlinie (Gelb)
+    # Gelbe Referenzlinie dauerhaft zeichnen
     if len(st.session_state.clicks_ref) == 2:
         draw.line(st.session_state.clicks_ref, fill="yellow", width=5)
     
-    # Tracking-Punkte (Rot)
+    # Rote Tracking-Punkte zeichnen
     for p in st.session_state.clicks_track:
         draw.ellipse([p[0]-4, p[1]-4, p[0]+4, p[1]+4], fill="red")
 
-    # Interaktives Zoomen
+    # Zoom-Ansicht für das Klicken
     w, h = pil_img.size
     display_img = pil_img.resize((int(w * zoom), int(h * zoom)))
+    
+    st.write("Tippe auf das Bild, um Punkte zu setzen. Das Bild springt automatisch weiter.")
     value = streamlit_image_coordinates(display_img, key="main_canvas")
 
     if value:
         rx, ry = value["x"] / zoom, value["y"] / zoom
         new_pt = (rx, ry)
         
-        # Punkt setzen Logik
+        # Referenz setzen
         if len(st.session_state.clicks_ref) < 2:
             if not st.session_state.clicks_ref or (abs(st.session_state.clicks_ref[-1][0] - rx) > 1):
                 st.session_state.clicks_ref.append(new_pt)
                 st.rerun()
+        # Tracking setzen & Auto-Jump
         else:
             if not st.session_state.clicks_track or (abs(st.session_state.clicks_track[-1][0] - rx) > 0.5):
                 st.session_state.clicks_track.append(new_pt)
@@ -179,28 +174,28 @@ if st.session_state.strobe_preview is not None:
                     st.session_state.current_frame_idx += 1
                 st.rerun()
 
-    # Controls unterm Bild
+    # Manuelle Steuerung
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("⬅️ Zurück"):
+        if st.button("⬅️ Vorheriges Bild"):
             st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
             st.rerun()
     with c2:
-        if st.button("Vorwärts ➡️"):
+        if st.button("Nächstes Bild ➡️"):
             st.session_state.current_frame_idx = min(len(st.session_state.extracted_frames)-1, st.session_state.current_frame_idx + 1)
             st.rerun()
     with c3:
-        if st.button("🗑️ Letzten Punkt löschen"):
+        if st.button("🗑️ Letzten Tracking-Punkt löschen"):
             if st.session_state.clicks_track:
                 st.session_state.clicks_track.pop()
                 st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
                 st.rerun()
 
-    # Auswertungstabelle anzeigen
+    # Tabelle anzeigen
     if len(st.session_state.clicks_track) >= 2:
         st.divider()
-        st.subheader("Berechnete Geschwindigkeiten")
-        # (Wiederholung der Berechnung für die Anzeige)
+        st.subheader("Ergebnisse")
+        # Berechnung (identisch zu oben für die Anzeige)
         px_dist = np.sqrt((st.session_state.clicks_ref[0][0]-st.session_state.clicks_ref[1][0])**2 + (st.session_state.clicks_ref[0][1]-st.session_state.clicks_ref[1][1])**2)
         m_per_px = real_dist / px_dist
         f = st.session_state.video_info["freq"]
@@ -209,7 +204,8 @@ if st.session_state.strobe_preview is not None:
             p_a, p_b = st.session_state.clicks_track[i], st.session_state.clicks_track[i+1]
             d_m = np.sqrt((p_a[0]-p_b[0])**2 + (p_a[1]-p_b[1])**2) * m_per_px
             v = d_m * f
-            res.append({"Intervall": f"P{i+1}➔P{i+2}", "v (m/s)": round(v, 2), "v (km/h)": round(v*3.6, 2)})
+            res.append({"Intervall": i+1, "v (m/s)": round(v, 2), "v (km/h)": round(v*3.6, 2)})
         st.table(pd.DataFrame(res))
+
 else:
-    st.info("Bitte Video hochladen und links 'Video verarbeiten' klicken.")
+    st.info("Willkommen! Lade ein Video hoch und klicke in der Sidebar auf 'Video verarbeiten'.")
