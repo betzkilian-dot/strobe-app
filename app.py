@@ -7,11 +7,10 @@ import os
 import pandas as pd
 import io
 import plotly.express as px
-import plotly.io as pio
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # Versionsnummer
-VERSION = "v0.002"
+VERSION = "v0.006"
 
 st.set_page_config(page_title="Physik Strobe Pro", layout="wide")
 
@@ -99,42 +98,39 @@ if st.session_state.base_strobe is not None:
     canvas_width = st.sidebar.slider("Anzeigebreite (Pixel)", 400, 1200, 800)
     real_dist = st.sidebar.number_input("Referenzstrecke (m)", value=1.0)
 
-    # --- STROBOSKOPBILD MIT AUSWERTUNG ---
-    st.subheader("🖼️ Stroboskopbild mit Auswertung")
-    
-    # Basis-Strobe nehmen und optimieren
-    strobe_pil = Image.fromarray(st.session_state.base_strobe)
-    strobe_enhanced = enhance_image(strobe_pil, brightness, contrast)
-    draw_strobe = ImageDraw.Draw(strobe_enhanced)
-    
-    # Referenz einzeichnen
-    if len(st.session_state.clicks_ref) == 2:
-        draw_strobe.line(st.session_state.clicks_ref, fill="yellow", width=5)
-    
-    # Tracking Pfad einzeichnen
-    if len(st.session_state.clicks_track) >= 2:
-        draw_strobe.line(st.session_state.clicks_track, fill="red", width=3)
-        for p in st.session_state.clicks_track:
-            draw_strobe.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
+    if st.sidebar.button("📏 Referenzstrecke neu festlegen", type="primary", use_container_width=True):
+        st.session_state.clicks_ref = []
+        st.rerun()
 
-    st.image(strobe_enhanced, use_container_width=True)
+    # --- ANZEIGE DER STROBOSKOPBILDER ---
+    st.subheader("🖼️ Stroboskopbild (Original)")
+    st_pil_clean = Image.fromarray(st.session_state.base_strobe)
+    st_enhanced_clean = enhance_image(st_pil_clean, brightness, contrast)
+    st.image(st_enhanced_clean, use_container_width=True)
+
+    st.subheader("📝 Stroboskopbild mit Auswertung")
+    st_enhanced_eval = st_enhanced_clean.copy()
+    draw_st = ImageDraw.Draw(st_enhanced_eval)
     
-    # Download Button für das Strobe Bild
+    if len(st.session_state.clicks_ref) == 2:
+        draw_st.line(st.session_state.clicks_ref, fill="yellow", width=5)
+    
+    if len(st.session_state.clicks_track) >= 2:
+        draw_st.line(st.session_state.clicks_track, fill="red", width=3)
+        for p in st.session_state.clicks_track:
+            draw_st.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
+
+    st.image(st_enhanced_eval, use_container_width=True)
+    
     buf_strobe = io.BytesIO()
-    strobe_enhanced.save(buf_strobe, format="PNG")
+    st_enhanced_eval.save(buf_strobe, format="PNG")
     st.sidebar.download_button("📥 Download Strobe + Pfad", buf_strobe.getvalue(), "strobe_analyse.png", "image/png", use_container_width=True)
 
     st.divider()
 
     # --- INTERAKTIVES TRACKING ---
     st.subheader("🎯 Messpunkt-Erfassung")
-    if len(st.session_state.clicks_ref) < 2:
-        st.info("📏 Schritt 1: Referenz markieren")
-        idx = 0
-    else:
-        idx = st.session_state.current_frame_idx
-        st.success(f"Tracking: Bild {idx + 1}/{len(st.session_state.extracted_frames)}")
-
+    idx = st.session_state.current_frame_idx
     raw_frame = st.session_state.extracted_frames[idx].copy()
     pil_img = enhance_image(Image.fromarray(raw_frame), brightness, contrast)
     draw = ImageDraw.Draw(pil_img)
@@ -167,12 +163,13 @@ if st.session_state.base_strobe is not None:
             st.session_state.current_frame_idx = 0
             st.rerun()
     with c2:
-        if st.button("🗑️ Referenz neu setzen", use_container_width=True):
-            st.session_state.clicks_ref = []
+        if st.button("⏪ Einen Frame zurück", use_container_width=True):
+            st.session_state.current_frame_idx = max(0, st.session_state.current_frame_idx - 1)
+            if st.session_state.clicks_track: st.session_state.clicks_track.pop()
             st.rerun()
 
     # --- PHYSIKALISCHE DIAGRAMME ---
-    if len(st.session_state.clicks_track) >= 2:
+    if len(st.session_state.clicks_track) >= 2 and len(st.session_state.clicks_ref) == 2:
         st.divider()
         st.subheader("📊 Diagramme & Analyse")
         
@@ -195,27 +192,27 @@ if st.session_state.base_strobe is not None:
         for i in range(len(v_list)-1):
             a_list.append((v_list[i+1] - v_list[i]) / dt)
 
-        tab1, tab2, tab3 = st.tabs(["Zeit-Weg (s-t)", "Zeit-Geschw. (v-t)", "Zeit-Beschl. (a-t)"])
+        # Tabs mit neuen Bezeichnungen
+        tab1, tab2, tab3 = st.tabs(["Zeit-Weg (t-s)", "Zeit-Geschwindigkeit (t-v)", "Zeit-Beschleunigung (t-a)"])
         
         with tab1:
-            fig_s = px.line(x=times, y=dist_cum, labels={'x':'Zeit (s)', 'y':'Weg (m)'}, title="s-t Diagramm", markers=True)
+            fig_s = px.line(x=times, y=dist_cum, labels={'x':'Zeit (s)', 'y':'Weg (m)'}, title="t-s Diagramm", markers=True)
             st.plotly_chart(fig_s, use_container_width=True)
-            st.download_button("📥 s-t Diagramm (HTML)", fig_s.to_html(), "st_diagramm.html", "text/html")
+            st.download_button("📥 t-s Diagramm (HTML)", fig_s.to_html(), "ts_diagramm.html", "text/html")
 
         with tab2:
-            fig_v = px.line(x=times[1:], y=v_list, labels={'x':'Zeit (s)', 'y':'v (m/s)'}, title="v-t Diagramm", markers=True)
+            fig_v = px.line(x=times[1:], y=v_list, labels={'x':'Zeit (s)', 'y':'v (m/s)'}, title="t-v Diagramm", markers=True)
             st.plotly_chart(fig_v, use_container_width=True)
-            st.download_button("📥 v-t Diagramm (HTML)", fig_v.to_html(), "vt_diagramm.html", "text/html")
+            st.download_button("📥 t-v Diagramm (HTML)", fig_v.to_html(), "tv_diagramm.html", "text/html")
 
         with tab3:
             if len(a_list) > 0:
-                fig_a = px.line(x=times[2:], y=a_list, labels={'x':'Zeit (s)', 'y':'a (m/s²)'}, title="a-t Diagramm", markers=True)
+                fig_a = px.line(x=times[2:], y=a_list, labels={'x':'Zeit (s)', 'y':'a (m/s²)'}, title="t-a Diagramm", markers=True)
                 st.plotly_chart(fig_a, use_container_width=True)
-                st.download_button("📥 a-t Diagramm (HTML)", fig_a.to_html(), "at_diagramm.html", "text/html")
+                st.download_button("📥 t-a Diagramm (HTML)", fig_a.to_html(), "ta_diagramm.html", "text/html")
             else:
                 st.info("Beschleunigung benötigt mindestens 4 Messpunkte.")
 
-        # CSV Download
         df_res = pd.DataFrame({"Zeit_s": times[1:], "v_ms": v_list})
         st.sidebar.download_button("📥 Download Messdaten (CSV)", df_res.to_csv(index=False).encode('utf-8'), "messung.csv", "text/csv", use_container_width=True)
 
